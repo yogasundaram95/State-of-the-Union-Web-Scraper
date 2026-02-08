@@ -1,0 +1,25 @@
+# Generated speech files
+SpeechFiles/
+CombinedStateOfUnionAddresses.txt
+
+# Logs
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Environment
+.env
+venv/
+.venv/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo

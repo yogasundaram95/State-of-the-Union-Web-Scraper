@@ -1,17 +1,46 @@
 # Required Libraries
 import requests
+from requests.exceptions import RequestException
 from lxml import html
 from lxml import etree
 import os
+import re
 import time
+import logging
 import pyodbc
 from urllib.parse import urljoin
 from datetime import datetime
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('scraper.log', encoding='utf-8'),
+    ]
+)
+logger = logging.getLogger(__name__)
+
+HEADERS = {'User-Agent': 'Mozilla/5.0 (compatible; SOTUScraper/1.0)'}
+
+
+def validate_sql_identifier(identifier, identifier_type="identifier"):
+    """Validates that a SQL identifier contains only safe characters (alphanumeric and underscores)."""
+    if not re.match(r'^[A-Za-z0-9_]+$', identifier):
+        raise ValueError(f"Invalid SQL {identifier_type}: '{identifier}'. Only alphanumeric characters and underscores are allowed.")
+
+
+def record_exists(cursor, table, name, date):
+    """Checks if a record with the given president name and date already exists."""
+    cursor.execute(f"SELECT COUNT(*) FROM {table} WHERE NAME_OF_PRESIDENT = ? AND DATE_OF_UNION_ADDRESS = ?", (name, str(date)))
+    return cursor.fetchone()[0] > 0
+
+
 # Main program starts here
 def main():
     """A web scraper that extracts State of the Union address speeches and stores them in a SQL Server table."""
-    
+
     # setup SQL Server connection
     server = os.environ.get('SQL_SERVER', r'DHARMIK\SQLSERVER2022')
     database = os.environ.get('SQL_DATABASE', 'STATE_UNION_ADDRESSES')
@@ -19,11 +48,29 @@ def main():
     main_url = 'https://www.infoplease.com'
     speeches_url = 'https://www.infoplease.com/primary-sources/government/presidential-speeches/state-union-addresses'
 
+    # Validate SQL identifiers before use
+    try:
+        validate_sql_identifier(database, "database name")
+        validate_sql_identifier(table, "table name")
+    except ValueError as e:
+        logger.critical(str(e))
+        return
+
     # Connect to SQL Server and create the database and table
-    cursor = connect_to_sql_server(server, database, table)
+    try:
+        cursor = connect_to_sql_server(server, database, table)
+    except Exception as e:
+        logger.critical(f"Failed to connect to SQL Server: {e}")
+        return
 
     # Get main page content to parse
-    page = requests.get(speeches_url, timeout=30)
+    try:
+        page = requests.get(speeches_url, headers=HEADERS, timeout=30)
+        page.raise_for_status()
+    except RequestException as e:
+        logger.critical(f"Failed to fetch main speeches page: {e}")
+        return
+
     tree = html.fromstring(page.content)
     html_etree = etree.ElementTree(tree)
 
@@ -59,14 +106,29 @@ def main():
                 except ValueError:
                     continue  # Skip if the date format is incorrect
             else:
-                continue  
+                continue
 
-            # Print a processing message
-            print(f"Processing speech for {president} ({date})")
+            # Check for duplicate before scraping
+            try:
+                if record_exists(cursor, table, president, date):
+                    logger.warning(f"Duplicate skipped: {president} ({date})")
+                    continue
+            except Exception:
+                pass  # If check fails, proceed with insertion
+
+            # Log a processing message
+            logger.info(f"Processing speech for {president} ({date})")
 
             # Extract the speech content from the speech link
             time.sleep(1)  # Rate limit between requests
-            speech_response = requests.get(full_link, timeout=30)
+            try:
+                speech_response = requests.get(full_link, headers=HEADERS, timeout=30)
+                speech_response.raise_for_status()
+            except RequestException as e:
+                logger.error(f"Failed to fetch speech for {president} ({date}): {e}")
+                broken_links.append((president, date, full_link))
+                continue
+
             speech_tree = html.fromstring(speech_response.content)
 
             # Find all <p> tags containing the speech text and join their content
@@ -75,12 +137,12 @@ def main():
 
             # Check if the speech text is empty (broken link)
             if not speech_text.strip():
-                print(f"No speech found for {president} ({date})")
+                logger.warning(f"No speech found for {president} ({date})")
                 broken_links.append((president, date, full_link))
 
                 # Insert NULL values for FILENAME_ADDRESS and TEXT_OF_ADDRESS
                 insert_row_into_table(cursor, table, president, date, full_link, 'NULL', 'NULL')
-                continue 
+                continue
 
             # Saving speech text to a local file
             filename = write_to_file(output_directory, f"{president} ({date})", speech_text)
@@ -92,14 +154,18 @@ def main():
             combined_file.write(f"{president} ({date})\n\n{speech_text}\n\n{'-'*80}\n\n")
 
     # Success message for records stored in database
-    print(f"Records stored in the SQL database.")
+    logger.info("Records stored in the SQL database.")
 
     # Display broken links after processing
     display_broken_links(broken_links)
-    
+
 
 def connect_to_sql_server(server, database, table):
     """Connects to the SQL Server, creates the database and table if they don't exist."""
+    # Validate identifiers
+    validate_sql_identifier(database, "database name")
+    validate_sql_identifier(table, "table name")
+
     # Connect to SQL Server
     odbc_conn = pyodbc.connect('DRIVER={SQL Server};SERVER=' + server + ';Trusted_Connection=yes;')
     odbc_conn.autocommit = True
@@ -116,7 +182,7 @@ def connect_to_sql_server(server, database, table):
     # Switch to the database
     cursor.execute(f"USE {database};")
 
-    # Create the table if it doesn't exist
+    # Create the table if it doesn't exist (with UNIQUE constraint for duplicate prevention)
     cursor.execute(f"""
     IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = '{table}')
     BEGIN
@@ -125,7 +191,8 @@ def connect_to_sql_server(server, database, table):
             DATE_OF_UNION_ADDRESS DATE,
             LINK_TO_ADDRESS VARCHAR(255),
             FILENAME_ADDRESS VARCHAR(255),
-            TEXT_OF_ADDRESS NVARCHAR(MAX)
+            TEXT_OF_ADDRESS NVARCHAR(MAX),
+            UNIQUE (NAME_OF_PRESIDENT, DATE_OF_UNION_ADDRESS)
         );
     END
     """)
@@ -133,16 +200,24 @@ def connect_to_sql_server(server, database, table):
     return cursor
 
 def insert_row_into_table(cursor, table, name, date, link, file, text):
-    """Inserts a single union address into the SQL Server database."""
+    """Inserts a single union address into the SQL Server database. Returns True if inserted, False if skipped."""
 
-    # Insert the speech data into the table using parameterized query
-    cursor.execute(f"""
-        INSERT INTO {table} (NAME_OF_PRESIDENT, DATE_OF_UNION_ADDRESS, LINK_TO_ADDRESS, FILENAME_ADDRESS, TEXT_OF_ADDRESS)
-        VALUES (?, ?, ?, ?, ?);
-        """, (name, str(date), link, file, text))
+    try:
+        # Insert the speech data into the table using parameterized query
+        cursor.execute(f"""
+            INSERT INTO {table} (NAME_OF_PRESIDENT, DATE_OF_UNION_ADDRESS, LINK_TO_ADDRESS, FILENAME_ADDRESS, TEXT_OF_ADDRESS)
+            VALUES (?, ?, ?, ?, ?);
+            """, (name, str(date), link, file, text))
+        return True
+    except pyodbc.IntegrityError:
+        logger.warning(f"Duplicate record skipped during insert: {name} ({date})")
+        return False
+    except Exception as e:
+        logger.error(f"Failed to insert record for {name} ({date}): {e}")
+        return False
 
 def write_to_file(output_directory, file_name, text):
-    """Writes the speech to a local file on disk and returns the file path.""" 
+    """Writes the speech to a local file on disk and returns the file path."""
     # Clean up the file name and construct the full file path
     clean_file_name = file_name.replace(',', '').replace(' ', '_')
     full_file_path = os.path.join(output_directory, f"{clean_file_name}.txt")
@@ -155,10 +230,15 @@ def display_broken_links(broken_links):
     """Displays any broken links encountered while scraping."""
     if broken_links:
         for president, date, _ in broken_links:
-            print(f"broken link - {president} ({date})")
+            logger.warning(f"Broken link: {president} ({date})")
     else:
-        print("No broken links encountered.")
+        logger.info("No broken links encountered.")
 
 # Run the main function
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        logger.info("Scraper interrupted by user.")
+    except Exception as e:
+        logger.critical(f"Unhandled exception: {e}", exc_info=True)

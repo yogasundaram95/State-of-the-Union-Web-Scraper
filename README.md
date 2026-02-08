@@ -122,3 +122,63 @@ export SQL_DATABASE='YOUR_DATABASE'
 ```bash
 python main.py
 ```
+
+---
+
+## Demo (No SQL Server Required)
+
+Want to see the scraper in action without setting up SQL Server? Run the standalone demo script:
+
+```bash
+python demo.py
+```
+
+The demo scrapes 3 historical speeches from [The American Presidency Project (UCSB)](https://www.presidency.ucsb.edu) and saves them to the `sample_output/` directory:
+
+- **George Washington** — January 8, 1790 (First Annual Address)
+- **Abraham Lincoln** — December 1, 1862 (Second Annual Message)
+- **John F. Kennedy** — January 11, 1962 (State of the Union Address)
+
+### Example Terminal Output
+
+```
+$ python demo.py
+2026-02-08 02:00:31 [INFO] State of the Union Web Scraper — Demo Mode
+2026-02-08 02:00:31 [INFO] Scraping 3 speeches (no SQL Server needed)
+
+2026-02-08 02:00:31 [INFO] Scraping: George Washington (January 8, 1790)
+2026-02-08 02:00:33 [INFO] Saved to sample_output/George_Washington_(January_8_1790).txt
+2026-02-08 02:00:33 [INFO] Scraping: Abraham Lincoln (December 1, 1862)
+2026-02-08 02:00:35 [INFO] Saved to sample_output/Abraham_Lincoln_(December_1_1862).txt
+2026-02-08 02:00:35 [INFO] Scraping: John F. Kennedy (January 11, 1962)
+2026-02-08 02:00:37 [INFO] Saved to sample_output/John_F._Kennedy_(January_11_1962).txt
+
+======================================================================
+DEMO RESULTS SUMMARY
+======================================================================
+
+President:  George Washington
+Date:       January 8, 1790
+Length:     6,670 characters
+Saved to:   George_Washington_(January_8_1790).txt
+Preview:    Fellow-Citizens of the Senate and House of Representatives...
+----------------------------------------------------------------------
+
+President:  Abraham Lincoln
+Date:       December 1, 1862
+Length:     49,447 characters
+Saved to:   Abraham_Lincoln_(December_1_1862).txt
+Preview:    Fellow-Citizens of the Senate and House of Representatives...
+----------------------------------------------------------------------
+
+President:  John F. Kennedy
+Date:       January 11, 1962
+Length:     39,351 characters
+Saved to:   John_F._Kennedy_(January_11_1962).txt
+Preview:    [As delivered in person before a joint session]...
+----------------------------------------------------------------------
+
+Total speeches scraped: 3
+```
+
+Pre-generated sample files are available in [`sample_output/`](sample_output/).
